@@ -238,7 +238,7 @@ N = 100
 THREADS = 10
 
 
-def mutate_conf(conf, stddev=0.5):
+def mutate_conf(conf, stddev=0.25):
     """
         Randomly tweaks conf with deltas from normal distribution
     """
@@ -260,12 +260,12 @@ def evolve_conf(initial_conf, gen=0):
         out_q.put({'games': games+gamesR, 'conf1wins': whitewin + blackwinR, 'conf2wins': blackwin + whitewinR, 'ties': tie + tieR, 'index': idx})
 
 
-    dump_conf('gen_' + str(gen) + '_conf.json', initial_conf)
+    dump_conf('confs/gen_' + str(gen) + '.json', initial_conf)
     parent_conf = initial_conf
     while True:
 
         print("PARENT:", parent_conf)
-        child_confs = [mutate_conf(load_conf('gen_' + str(gen) + '_conf.json')) for _ in range(THREADS)]
+        child_confs = [mutate_conf(load_conf('confs/gen_' + str(gen) + '.json')) for _ in range(THREADS)]
 
         out_q = mp.Queue()
         procs = [mp.Process(target=worker, args=(N, parent_conf, child_conf, idx, out_q)) for idx, child_conf in enumerate(child_confs)]
@@ -291,12 +291,13 @@ def evolve_conf(initial_conf, gen=0):
                 best_winrate = child_win_rate
 
         if best_winrate > 1.25: # TODO find proper measure of statistical significance
-            print("Updating parent to child", best_child, "with win rate:", best_winrate)
+            print("Updating parent to child", best_child, "with win rate:", best_winrate, '->', results[best_child])
             gen += 1
             parent_conf = child_confs[best_child]
-            dump_conf('gen_' + str(gen) + '_conf.json', parent_conf)
+            dump_conf('confs/gen_' + str(gen) + '.json', parent_conf)
         print()
 
 
-conf = load_conf('gen_14_conf.json')
-evolve_conf(conf, 14)
+start_gen = 19
+conf = load_conf('confs/gen_' + str(start_gen) + '_conf.json')
+evolve_conf(conf, start_gen)
