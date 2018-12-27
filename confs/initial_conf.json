@@ -1,1 +1,1 @@
-{"piece2value": {"1": 1, "2": 3, "3": 4, "4": 5, "5": 6, "6": 10}, "VALUE_WEIGHT": 15, "CONTROL_WEIGHT": 1, "OD_WEIGHT": 2, "CHECK_WEIGHT": 5, "BACKED_MULT": 5, "PAWN_PROMO_WEIGHT": 1}
+{"piece2value": {"1": 1, "2": 3, "3": 4, "4": 5, "5": 6, "6": 0.1}, "VALUE_WEIGHT": 15, "CONTROL_WEIGHT": 0.5, "OD_WEIGHT": 2, "CHECK_WEIGHT": 5, "BACKED_MULT": 15, "PAWN_PROMO_WEIGHT": 1, "KING_PRESSURE_WEIGHT": 5}
