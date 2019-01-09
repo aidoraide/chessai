@@ -12,6 +12,7 @@ from random import random
 from time import time
 from copy import deepcopy
 from bisect import bisect_left, bisect_right
+from scipy.special import expit
 import numpy as np
 
 
@@ -60,13 +61,20 @@ dump_conf('initial_conf', initial_conf)
 
 
 best_conf = load_best_conf()
-MAX_TURNS = 50
-def playout(board):
-    starter_turn = board.turn
+MAX_TURNS = INF
+def playout(board, p1, p2, tie):
     history = simulate(board, best_conf, best_conf, MAX_TURNS)
-    is_win = starter_turn != history[-1].turn and history[-1].result() in ('1-0', '0-1')
-    is_tie = history[-1].result() in ('1/2-1/2', '*')
-    return is_win, is_tie
+    return get_result(history[-1], p1, p2, tie)
+
+
+def get_result(board, p1, p2, tie):
+    if board.result() in ('1/2-1/2', '*'):
+        return tie
+    return p2 if board.turn == chess.WHITE else p1
+
+
+def get_player(board, p1, p2):
+    return p1 if board.turn == chess.WHITE else p2
 
 
 class Board(chess.Board):
@@ -173,7 +181,7 @@ class Board(chess.Board):
                     # This piece can be considered sacrificed since it can be taken next turn.
                     # We treat it as a ratio of the pieces value to the other pieces we have.
                     # It is extra bad for our pieces to not be backed up because it is not our turn.
-                    score = BACKED_MULT * (piece2value[p.piece_type] / piece2value[target.piece_type]) \
+                    score = BACKED_MULT * piece2value[target.piece_type] \
                         / (our_pieces_value / BACKED_MULT if target.color == us else opponent_pieces_value)
                 else:
                     score = max(piece2value[p.piece_type] - piece2value[target.piece_type], 1) * 10
@@ -222,31 +230,27 @@ class Board(chess.Board):
         return self.state.__hash__()
 
 
+def get_best_move(board, conf_white, conf_black):
+    next_states = [board.get_next_state(m) for m in board.legal_moves]
+    evals = [b.evaluate(conf_white if board.turn == chess.WHITE else conf_black) for b in next_states]
+    base = min(evals)
+    evals = [e - base for e in evals]
+    next_states, evals = list(zip(*sorted(zip(next_states, evals), key=lambda x: x[1])))
+
+    cutoff = bisect_left(evals, evals[-1] * 0.9)
+    next_states, evals = next_states[cutoff:][::-1], np.array(evals[cutoff:][::-1])
+
+    chosen = np.random.choice(next_states, p=evals / sum(evals))
+
+    return chosen
+
+
 def simulate(board, conf_white, conf_black, max_turns=INF):
     turns, history = 0, []
     while not board.is_game_over() and turns < max_turns:
         turns += 1
-        moves = list(board.legal_moves)
-        next_states = [board.get_next_state(m) for m in moves]
-        evals = [b.evaluate(conf_white if board.turn == chess.WHITE else conf_black) for b in next_states]
-        base = min(evals)
-        evals = [e - base for e in evals]
-        moves, next_states, evals = list(zip(*sorted(zip(moves, next_states, evals), key=lambda x: x[2])))
-
-        cutoff = bisect_left(evals, evals[-1] * 0.4)
-        moves, next_states, evals = moves[cutoff:][::-1], next_states[cutoff:][::-1], evals[cutoff:][::-1]
-
-        rand, total, i = random() * sum(evals), 0, -1
-        while total < rand:
-            i += 1
-            total += evals[i]
-        
-        # print(evals)
-        # print("taking evals", i, "->", evals[i], moves[i])
-        # print(next_states[i])
-        # print()
         history.append(board)
-        board = next_states[i]
+        board = get_best_move(board, conf_white, conf_black)
 
     history.append(board)
     return history
@@ -264,6 +268,14 @@ def simulate_many(n, conf_white, conf_black, debug=False):
         tie += b.result() == '1/2-1/2'
 
         if debug:
+            TURNS = len(history)
+            if b.result() == '1/2-1/2':
+                for i, past_state in enumerate(history[-TURNS:]):
+                    print('='*25 + str(i - TURNS + 1) + '='*25)
+                    evaluation = past_state.evaluate(conf_black if past_state.turn == chess.WHITE else conf_white, True)
+                    print(-i, ' evaluates to ->', evaluation)
+                    print(past_state)
+                    print()
             if b.is_fivefold_repetition():
                 print("fivefold_repetition")
             if b.is_insufficient_material():
@@ -280,14 +292,7 @@ def simulate_many(n, conf_white, conf_black, debug=False):
             print("Average time per game", (time() - t0)/games)
             print(row_format.format('games', 'white', 'black', 'tie'))
             print(row_format.format(games, whitewin, blackwin, tie))
-            TURNS = 5
-            if b.result() == '1/2-1/2':
-                for i, past_state in enumerate(history[-TURNS:]):
-                    print('='*25 + str(-i) + '='*25)
-                    evaluation = past_state.evaluate(conf_black if past_state.turn == chess.WHITE else conf_white, True)
-                    print(-i, ' evaluates to ->', evaluation)
-                    print(past_state)
-                    print()
+            break
     
     return games, whitewin, blackwin, tie
 
