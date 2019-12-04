@@ -7,6 +7,14 @@ import torch
 import torch.nn as nn
 device = torch.device("cuda:0")
 
+piece2point = {
+    PAWN: 1/9,
+    BISHOP: 3/9,
+    KNIGHT: 3/9,
+    ROOK: 5/9,
+    QUEEN: 1,
+    KING: 0,
+}
 
 #    +
 #    N
@@ -104,32 +112,81 @@ piece2plane = {val: idx for idx, val in enumerate([
     (WHITE, 'has_queenside_castling_rights'),
     (BLACK, 'has_kingside_castling_rights'),
     (BLACK, 'has_queenside_castling_rights'),
-    'turn'
+    *[f'legal_{i}' for i in range(73)],
+    *[f'into_check_{i}' for i in range(73)],
+    *[f'is_capture_{i}' for i in range(73)],
+    (WHITE, 'score'),
+    (BLACK, 'score'),
+    'score_diff',
+    (WHITE, 'point_map'),
+    (BLACK, 'point_map'),
+    'signed_point_map',
+    (WHITE, 'is_pinned_map'),
+    (BLACK, 'is_pinned_map'),
+    *[('attack_graph', i) for i in range(64)],
+    *[('reverse_attack_graph', i) for i in range(64)],
+    'is_check',
+    'turn',
 ])}
+
+turn2sign = {
+    BLACK: 1,
+    WHITE: -1,
+}
 
 def board2tensor(board):
     tensor = torch.zeros([len(piece2plane), 8, 8], dtype=torch.float32)
     
-    # 12 Planes for each piece/color combination
+    scores = {WHITE: 0, BLACK: 0}
     for x, y in itertools.product(range(8), range(8)):
         sqr = x + y*8
         piece = board.piece_at(sqr)
+        for color in (BLACK, WHITE):
+            for atkSqr in board.attackers(color, sqr):
+                ax, ay = atkSqr//8, atkSqr%8
+                tensor[piece2plane[('attack_graph', atkSqr)],x,y] = 1
+                tensor[piece2plane[('reverse_attack_graph', sqr)],ax,ay] = 1
+
         if not piece: continue
+        # 12 Planes for each piece/color combination
         plane = piece2plane[(piece.color, piece.piece_type)]
         tensor[plane][x][y] = 1
-    
+
+        points = piece2point[piece.piece_type]
+        scores[piece.color] += points
+        tensor[piece2plane[(piece.color, 'point_map')]][x][y] = points
+        tensor[piece2plane['signed_point_map']][x][y] = points * turn2sign[board.turn]
+        tensor[piece2plane[(WHITE, 'is_pinned_map')]][x][y] = board.is_pinned(WHITE, sqr)
+        tensor[piece2plane[(BLACK, 'is_pinned_map')]][x][y] = board.is_pinned(BLACK, sqr)
+
+    tensor[piece2plane[(WHITE, 'score')],:,:] = scores[WHITE]
+    tensor[piece2plane[(BLACK, 'score')],:,:] = scores[BLACK]
+    tensor[piece2plane['score_diff'],:,:] = (scores[BLACK] - scores[WHITE]) * turn2sign[board.turn]
+
     # 4 planes for castling rights
     combinations = itertools.product((WHITE, BLACK), (board.has_queenside_castling_rights, board.has_kingside_castling_rights))
     for color, func in combinations:
         if func(color):
             plane = piece2plane[(color, func.__name__)]
             tensor[plane,:,:] = 1
-    
+
+    legal, into_check, capture = get_masks(board, is_legal_mask, is_into_check_mask, is_capture_mask)
+
+    p1, p2 = piece2plane['legal_0'], piece2plane['legal_72']
+    tensor[p1:p2+1,:,:] = legal
+
+    p1, p2 = piece2plane['into_check_0'], piece2plane['into_check_72']
+    tensor[p1:p2+1,:,:] = into_check
+
+    p1, p2 = piece2plane['is_capture_0'], piece2plane['is_capture_72']
+    tensor[p1:p2+1,:,:] = capture
+
     # 1 plane is 1 if it is BLACK's turn to move, else 0 if WHITE's turn
-    if board.turn == BLACK:
-        plane = piece2plane['turn']
-        tensor[plane,:,:] = 1
-    
+    plane = piece2plane['turn']
+    tensor[plane,:,:] = turn2sign[board.turn]
+
+    tensor[piece2plane['is_check'],:,:] = 1 if board.is_check() else 0
+
     return tensor
 
 
@@ -137,10 +194,35 @@ def state2policy(board, best_move_idx):
     tensor = torch.zeros([73, 8, 8], dtype=torch.float32)
 #     for x, y, z in (move2idx(m) for m in board.legal_moves):
 #         tensor[z][x][y] = 1
-    
+
     x, y, z = best_move_idx
     tensor[z][x][y] = 1               # Make the best move worth more
     return tensor / torch.sum(tensor) # Turn tensor into probabilities (sum(tensor) == 1)
+
+def get_illegal_mask(board):
+    tensor = torch.ones([73, 8, 8], dtype=torch.float32)
+    for x, y, z in (move2idx(m) for m in board.legal_moves):
+        tensor[z][x][y] = 0
+    return tensor
+
+def get_legal_mask(board):
+    return 1 - get_illegal_mask(board)
+
+def is_legal_mask(board, m):
+    return 1
+
+def is_into_check_mask(board, m):
+    return 1 if board.is_into_check(m) else 0
+
+def is_capture_mask(board, m):
+    return 1 if board.is_capture(m) else 0
+
+def get_masks(board, *maskFuncs):
+    tensors = [torch.zeros([73, 8, 8], dtype=torch.float32) for i in maskFuncs]
+    for m, (x, y, z) in ((m, move2idx(m)) for m in board.legal_moves):
+        for i, maskFunc in enumerate(maskFuncs):
+            tensors[i][z][x][y] = maskFunc(board, m)
+    return tensors
 
 class ResBlock(nn.Module):
     def __init__(self):

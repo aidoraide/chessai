@@ -1,4 +1,4 @@
-from neural_utils import get_net, board2tensor, move2idx, idx2move
+from utils.neural_utils import get_net, board2tensor, move2idx, idx2move
 
 from collections import defaultdict
 from math import sqrt
