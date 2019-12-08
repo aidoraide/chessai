@@ -130,8 +130,8 @@ def fit_epoch(nnet, optimizer, scheduler, policy_criterion, value_criterion,
     nnet.train()
     write_helper = WriteHelper(writer)
     # Scale losses for metrics so they are the same regardless of reduction
-    vs = (lambda loss: loss/batch_size) if value_criterion.reduction == 'sum' else (lambda loss: loss)
-    ps = (lambda loss: loss/batch_size) if policy_criterion.reduction == 'sum' else (lambda loss: loss)
+    vs = (lambda loss: loss/batch_size/VALUE_WEIGHT) if value_criterion.reduction == 'sum' else (lambda loss: loss/VALUE_WEIGHT)
+    ps = (lambda loss: loss/batch_size/POLICY_WEIGHT) if policy_criterion.reduction == 'sum' else (lambda loss: loss/POLICY_WEIGHT)
     for i, batch in enumerate(train_dl):
         # Transfer to GPU
         state, policy, value = batch['state'].to(device), batch['policy'].to(device), \

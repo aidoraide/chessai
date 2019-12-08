@@ -89,10 +89,10 @@ if __name__ == '__main__':
     policy_criterion = nn.BCELoss(reduction='sum')
     value_criterion = nn.MSELoss(reduction='sum')
     VALUE_WEIGHT = 1
-    POLICY_WEIGHT = 1
-    optimizer = optim.SGD(nnet.parameters(), lr=1e-4, momentum=0.9, weight_decay=1e-5, nesterov=True)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, min_lr=1e-8, patience=250) # Patience in batches
+    POLICY_WEIGHT = .5
+    optimizer = optim.SGD(nnet.parameters(), lr=2e-5, momentum=0.9, weight_decay=1e-5, nesterov=True)
     train_dl, val_dl, test_dl = data_utils.get_split_dataloaders(BATCH_SIZE, data_utils.get_lichess_dataframe)
+    scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[int(i*len(train_dl)/3) for i in range(1, 4)])
 
 
     best_loss = float('inf')
