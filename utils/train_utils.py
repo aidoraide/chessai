@@ -62,18 +62,17 @@ class WriteHelper():
         white_mask = neural_utils.get_where_state_white_mask(state)
         black_mask = ~white_mask
         v_non_zero = (value != 0)
-        num_v_non_zero = v_non_zero.sum().item()
-        # Create a PR curve by setting P(win) = (1 + value)/2 and P(loss) = (1 - value)/2
-        value_labels = torch.zeros(num_v_non_zero, 2)
-        value_labels[:, 0] = (1 - value[v_non_zero])/2
-        value_labels[:, 1] = (1 + value[v_non_zero])/2
-        value_predictions = torch.zeros(num_v_non_zero, 2)
-        value_predictions[:, 0] = (1 - value_out[v_non_zero])/2
-        value_predictions[:, 1] = (1 + value_out[v_non_zero])/2
+
         self.writer.add_pr_curve(
-            f'{tag}/ValuePR/', value_labels, value_predictions, batch_idx)
+            f'{tag}/ValuePR/', (value[v_non_zero]+1)/2, (value_out[v_non_zero]+1)/2, batch_idx)
+        whole_batch = np.arange(batch_size)
+        pol_argmax = policy_out.flatten(1).argmax(1)
+        policy_labels = torch.zeros(batch_size).to(device)
+        policy_preds = torch.zeros(batch_size).to(device)
+        policy_labels[:] = policy.view(batch_size, -1)[whole_batch,pol_argmax]
+        policy_preds[:] = policy_out.view(batch_size, -1)[whole_batch,pol_argmax]
         self.writer.add_pr_curve(
-            f'{tag}/PolicyPR/', policy, policy_out, batch_idx)
+            f'{tag}/PolicyPR/', policy_labels, policy_preds, batch_idx)
 
         p_correct = policy.flatten(1).argmax(1) == policy_out.flatten(1).argmax(1)
         v_correct = ((value == -1) & (value_out < 0)) | ((value == 1) & (value_out > 0))
@@ -150,9 +149,10 @@ def fit_epoch(nnet, optimizer, scheduler, policy_criterion, value_criterion,
         total_loss = policy_loss + value_loss
         total_loss.backward()
         optimizer.step()
+        scheduler.step(total_loss)
 
         write_helper.write_to_tensorboard(f'train_{epoch+1}', i, train_dl.batch_size, len(
-            train_dl), nnet, state, value, policy, value_out, policy_out, vs(value_loss), ps(policy_loss), (ps(policy_loss) + vs(value_loss))/2, optimizer)
+            train_dl), nnet, state, value, policy, value_out, policy_out, vs(value_loss), ps(policy_loss), ps(policy_loss) + vs(value_loss), optimizer)
         print(f"Train Epoch {epoch+1}: {100.*i/len(train_dl):.2f}% {str(datetime.now() - t0).split('.')[0]}",
               end='\r\n' if i+1 == len(train_dl) else '\r')
 

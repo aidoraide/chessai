@@ -75,7 +75,7 @@ def init_weights(m):
 if __name__ == '__main__':
     if not os.path.exists('models'):
         os.mkdir('models')
-    
+
     writer = SummaryWriter()
 
     nnet = ChessNet(12)
@@ -91,7 +91,7 @@ if __name__ == '__main__':
     VALUE_WEIGHT = 1
     POLICY_WEIGHT = 1
     optimizer = optim.SGD(nnet.parameters(), lr=1e-4, momentum=0.9, weight_decay=1e-5, nesterov=True)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, min_lr=1e-8)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, min_lr=1e-8, patience=250) # Patience in batches
     train_dl, val_dl, test_dl = data_utils.get_split_dataloaders(BATCH_SIZE, data_utils.get_lichess_dataframe)
 
 
