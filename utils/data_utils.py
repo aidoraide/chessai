@@ -304,15 +304,6 @@ def worker_init_fn(worker_id):
     dataset = worker_info.dataset  # the dataset copy in this worker process
     dataset.assign_child(worker_id, worker_info.num_workers)
     print(f'worker {worker_id} granted data subset of length {len(dataset.child)}')
-    # worker_info.dataset = ChildDataset(dataset, worker_id, worker_info.num_workers)
-    # overall_start = 0
-    # overall_end = dataset.length-1
-    # # configure the dataset to only process the split workload
-    # per_worker = int(
-    #     math.ceil((overall_end - overall_start) / float(worker_info.num_workers)))
-    # worker_id = worker_info.id
-    # dataset.start = overall_start + worker_id * per_worker
-    # dataset.end = min(dataset.start + per_worker, overall_end)
 
 
 N_SPLIT = 1000

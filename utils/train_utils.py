@@ -54,73 +54,67 @@ class WriteHelper():
         self.value_histogram_idx = 0
         self.value_out_history = []
         self.white_mask_history = []
+        self.n_greater_history = []
         self.graph_added = False
 
     def write_to_tensorboard(self, tag, batch_idx, batch_size, n_batches, nnet, state, value, policy, value_out, policy_out, value_loss, policy_loss, total_loss, optimizer=None):
         if not self.graph_added:
             self.writer.add_graph(nnet, state)
+            self.graph_added = True
         white_mask = neural_utils.get_where_state_white_mask(state)
-        black_mask = ~white_mask
+        # black_mask = ~white_mask
         v_non_zero = (value != 0)
 
         self.writer.add_pr_curve(
             f'{tag}/ValuePR/', (value[v_non_zero]+1)/2, (value_out[v_non_zero]+1)/2, batch_idx)
-        whole_batch = np.arange(batch_size)
-        pol_argmax = policy_out.flatten(1).argmax(1)
-        policy_labels = torch.zeros(batch_size).to(device)
+        pol_argmax = policy.flatten(1).argmax(1)
+        policy_labels = torch.ones(batch_size).to(device) # They're all ones but this lets us see accuracy by threshold
         policy_preds = torch.zeros(batch_size).to(device)
-        policy_labels[:] = policy.view(batch_size, -1)[whole_batch,pol_argmax]
-        policy_preds[:] = policy_out.view(batch_size, -1)[whole_batch,pol_argmax]
+        policy_preds[:] = policy_out.flatten(1)[np.arange(batch_size),pol_argmax]
         self.writer.add_pr_curve(
             f'{tag}/PolicyPR/', policy_labels, policy_preds, batch_idx)
+        n_greater = (policy_out.flatten(1) > policy_preds.view(-1, 1)).sum(1)
 
         p_correct = policy.flatten(1).argmax(1) == policy_out.flatten(1).argmax(1)
         v_correct = ((value == -1) & (value_out < 0)) | ((value == 1) & (value_out > 0))
         p_loss = policy_loss.item()
         v_loss = value_loss.item()
         total_loss = total_loss.item()
-        lrs = [group['lr']
-               for group in optimizer.param_groups] if optimizer else []
-        self.writer.add_scalars(f'{tag}/ValueAccuracy/', {
-            'value': v_correct.sum().item()/v_non_zero.sum().item(),
-            'valueWhite': (v_correct & white_mask).sum().item()/(v_non_zero & white_mask).sum().item(),
-            'valueBlack': (v_correct & black_mask).sum().item()/(v_non_zero & black_mask).sum().item(),
-        }, batch_idx)
-        self.writer.add_scalars(f'{tag}/PolicyAccuracy/', {
-            'policy': p_correct.sum().item()/policy.size(0),
-            'policyWhite': (p_correct & white_mask).sum().item()/white_mask.sum().item(),
-            'policyBlack': (p_correct & black_mask).sum().item()/black_mask.sum().item(),
-        }, batch_idx)
-        self.writer.add_scalars(f'{tag}/Loss/', {
-            'policy': p_loss,
-            'value': v_loss,
-            'total': total_loss,
-        }, batch_idx)
-        self.writer.add_scalars(f'{tag}/LossValue/', {
-            'value': v_loss,
-        }, batch_idx)
-        if lrs:
+        self.writer.add_scalar(f'{tag}/Accuracy/Value', v_correct.sum().item()/v_non_zero.sum().item(), batch_idx)
+        self.writer.add_scalar(f'{tag}/Accuracy/Policy', p_correct.sum().item()/policy.size(0), batch_idx)
+        self.writer.add_scalar(f'{tag}/Loss/Value', v_loss, batch_idx)
+        self.writer.add_scalar(f'{tag}/Loss/Policy', p_loss, batch_idx)
+        self.writer.add_scalar(f'{tag}/Loss/Total', total_loss, batch_idx)
+        if optimizer and optimizer.param_groups:
+            lrs = [group['lr'] for group in optimizer.param_groups]
             self.writer.add_scalars(f'{tag}/LRs/', {
                 **{f'{i}': lr for i, lr in enumerate(lrs)},
             }, batch_idx)
 
         # histogram for every ~100k samples
         self.value_out_history.append(value_out.cpu())
-        self.white_mask_history.append(white_mask)
+        self.white_mask_history.append(white_mask.cpu())
+        self.n_greater_history.append(n_greater.cpu())
         next_batch_value_histogram_idx = (batch_idx+1)*batch_size//(1024*128)
         if self.value_histogram_idx != next_batch_value_histogram_idx:
-            histogram = torch.stack(self.value_out_history).flatten()
-            historical_white_mask = torch.stack(
-                self.white_mask_history).flatten()
-            self.writer.add_histogram(
-                'value_output', histogram, self.value_histogram_idx)
-            self.writer.add_histogram(
-                'value_output_when_white', histogram[historical_white_mask], self.value_histogram_idx)
-            self.writer.add_histogram(
-                'value_output_when_black', histogram[~historical_white_mask], self.value_histogram_idx)
+            if self.value_histogram_idx > 1:
+                # Add the histograms only after the models random initialization to get the right scale in TensorBoard
+                histogram = torch.stack(self.value_out_history).flatten()
+                historical_white_mask = torch.stack(
+                    self.white_mask_history).flatten()
+                self.writer.add_histogram(
+                    'value_output', histogram, self.value_histogram_idx)
+                self.writer.add_histogram(
+                    'value_output_when_white', histogram[historical_white_mask], self.value_histogram_idx)
+                self.writer.add_histogram(
+                    'value_output_when_black', histogram[~historical_white_mask], self.value_histogram_idx)
+                n_greater_histogram = torch.stack(self.n_greater_history).flatten()
+                self.writer.add_histogram(
+                    'n_greater_policy_predictions_than_true_label', n_greater_histogram, self.value_histogram_idx)
             self.value_histogram_idx = next_batch_value_histogram_idx
             self.value_out_history = []
             self.white_mask_history = []
+            self.n_greater_history = []
 
 
 def fit_epoch(nnet, optimizer, scheduler, policy_criterion, value_criterion,

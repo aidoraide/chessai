@@ -113,22 +113,7 @@ piece2plane = {val: idx for idx, val in enumerate([
     (WHITE, 'has_queenside_castling_rights'),
     (BLACK, 'has_kingside_castling_rights'),
     (BLACK, 'has_queenside_castling_rights'),
-    *[f'legal_{i}' for i in range(73)],
-    *[f'into_check_{i}' for i in range(73)],
-    *[f'is_capture_{i}' for i in range(73)],
-    (WHITE, 'score'),
-    (BLACK, 'score'),
-    'score_diff',
-    (WHITE, 'point_map'),
-    (BLACK, 'point_map'),
-    'signed_point_map',
-    (WHITE, 'is_pinned_map'),
-    (BLACK, 'is_pinned_map'),
-    *[('attack_graph', i) for i in range(64)],
-    *[('reverse_attack_graph', i) for i in range(64)],
-    'is_check',
-    (WHITE, 'turn'),
-    (BLACK, 'turn'),
+    'turn'
 ])}
 
 turn2sign = {
@@ -137,37 +122,19 @@ turn2sign = {
 }
 
 def get_where_state_white_mask(batch):
-    plane = piece2plane[(WHITE, 'turn')]
-    return batch[:,plane,0,0] == 1
+    return batch[:,piece2plane['turn'],0,0] == 1
 
 def board2tensor(board):
     tensor = torch.zeros([len(piece2plane), 8, 8], dtype=torch.float32)
     
-    scores = {WHITE: 0, BLACK: 0}
     for x, y in itertools.product(range(8), range(8)):
         sqr = x + y*8
         piece = board.piece_at(sqr)
-        for color in (BLACK, WHITE):
-            for atkSqr in board.attackers(color, sqr):
-                ax, ay = atkSqr//8, atkSqr%8
-                tensor[piece2plane[('attack_graph', atkSqr)],x,y] = 1
-                tensor[piece2plane[('reverse_attack_graph', sqr)],ax,ay] = 1
 
         if not piece: continue
         # 12 Planes for each piece/color combination
         plane = piece2plane[(piece.color, piece.piece_type)]
         tensor[plane][x][y] = 1
-
-        points = piece2point[piece.piece_type]
-        scores[piece.color] += points
-        tensor[piece2plane[(piece.color, 'point_map')]][x][y] = points
-        tensor[piece2plane['signed_point_map']][x][y] = points * turn2sign[board.turn]
-        tensor[piece2plane[(WHITE, 'is_pinned_map')]][x][y] = board.is_pinned(WHITE, sqr)
-        tensor[piece2plane[(BLACK, 'is_pinned_map')]][x][y] = board.is_pinned(BLACK, sqr)
-
-    tensor[piece2plane[(WHITE, 'score')],:,:] = scores[WHITE]
-    tensor[piece2plane[(BLACK, 'score')],:,:] = scores[BLACK]
-    tensor[piece2plane['score_diff'],:,:] = (scores[BLACK] - scores[WHITE]) * turn2sign[board.turn]
 
     # 4 planes for castling rights
     combinations = itertools.product((WHITE, BLACK), (board.has_queenside_castling_rights, board.has_kingside_castling_rights))
@@ -176,21 +143,7 @@ def board2tensor(board):
             plane = piece2plane[(color, func.__name__)]
             tensor[plane,:,:] = 1
 
-    legal, into_check, capture = get_masks(board, is_legal_mask, is_into_check_mask, is_capture_mask)
-
-    p1, p2 = piece2plane['legal_0'], piece2plane['legal_72']
-    tensor[p1:p2+1,:,:] = legal
-
-    p1, p2 = piece2plane['into_check_0'], piece2plane['into_check_72']
-    tensor[p1:p2+1,:,:] = into_check
-
-    p1, p2 = piece2plane['is_capture_0'], piece2plane['is_capture_72']
-    tensor[p1:p2+1,:,:] = capture
-
-    plane = piece2plane[(board.turn, 'turn')]
-    tensor[plane,:,:] = 1
-
-    tensor[piece2plane['is_check'],:,:] = 1 if board.is_check() else 0
+    tensor[piece2plane['turn'],:,:] = 1 if board.turn == WHITE else 0
 
     return tensor
 
