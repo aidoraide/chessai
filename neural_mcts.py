@@ -161,7 +161,7 @@ def action2move(state, a):
 nnet = get_net('models/oneshot1.sd')
 board = HashBoard()
 mcts = MCTS(board)
-NUM_MCTS = 1600
+NUM_MCTS = 800
 turn = 1
 debug = True
 while not Chess.isOver(board):

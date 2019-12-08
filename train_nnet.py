@@ -16,6 +16,7 @@ import torch.optim as optim
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
+from torch.utils.tensorboard import SummaryWriter
 device = torch.device("cuda:0")
 
 from utils import train_utils, data_utils, constants
@@ -44,12 +45,12 @@ class ChessNet(nn.Module):
             ('batchnorm256_1', nn.BatchNorm2d(1)),
             ('relu1', nn.ReLU(inplace=True)),
             ('flatten', Flatten()),
-            ('fc512_256', nn.Linear(64, 256)),
+            ('fc64_256', nn.Linear(64, 256)),
             ('relu3', nn.ReLU(inplace=True)),
             # ('dropout', nn.Dropout(p=0.7)),
-            ('fc64_1', nn.Linear(256, 3)),
-            # ('tanh', nn.Tanh()),
-            ('softmax', nn.Softmax(dim=1)),
+            ('fc256_1', nn.Linear(256, 1)),
+            ('tanh', nn.Tanh()),
+            # ('softmax', nn.Softmax(dim=1)),
         ]))
 
     def forward(self, x):
@@ -58,57 +59,51 @@ class ChessNet(nn.Module):
         value_out = self.value_head(tower_out)
         # value_out = (value_out**2)/(value_out**2).sum(dim=1).view(-1, 1) # L2 Norm
 
-        return policy_out.view(-1, 73, 8, 8), value_out.view(-1, 3)
+        return policy_out.view(-1, 73, 8, 8), value_out.view(-1, 1)
 
 def init_weights(m):
     classname = m.__class__.__name__
-    dist = 'NONE'
-    if classname.find('Linear') != -1:
-        dist = 'uniform'
-        bound = 50.0 / m.weight.data.shape[1]
+    if 'Linear' in classname:
+        bound = 1.0 / m.weight.data.shape[1]
         m.weight.data.uniform_(-bound, bound)
-        m.bias.data.uniform_(-bound, bound)
+        nn.init.zeros_(m.bias)
     # if 'Conv2d' in classname:
-    #     dist = 'normal'
     #     m.weight.data.normal_(0, 1)
     # if 'BatchNorm2d' in classname:
-    #     dist = 'normal'
     #     m.weight.data.normal_(0, 1)
-    
-    # print(f'init_weights {classname}: {dist}')
 
 if __name__ == '__main__':
     if not os.path.exists('models'):
         os.mkdir('models')
+    
+    writer = SummaryWriter()
 
-    nnet = ChessNet(3)
+    nnet = ChessNet(12)
     nnet.to(device)
     nnet.apply(init_weights)
     # if os.path.exists(constants.MODEL_PATH):
     #     nnet.load_state_dict(torch.load(constants.MODEL_PATH))
 
-    BATCH_SIZE = 64
+    BATCH_SIZE = 1024
     EPOCHS = 4
     policy_criterion = nn.BCELoss(reduction='sum')
     value_criterion = nn.MSELoss(reduction='sum')
     VALUE_WEIGHT = 1
     POLICY_WEIGHT = 1
-    optimizer = optim.SGD(nnet.parameters(), lr=1e-4, momentum=0.9, weight_decay=1e-5)
-    scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[1, 2, 3, 4], gamma=0.2)
+    optimizer = optim.SGD(nnet.parameters(), lr=1e-4, momentum=0.9, weight_decay=1e-5, nesterov=True)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, min_lr=1e-8)
+    train_dl, val_dl, test_dl = data_utils.get_split_dataloaders(BATCH_SIZE, data_utils.get_lichess_dataframe)
 
-    df = data_utils.get_lichess_dataframe()
-    # df = df.loc[df.value != 0] # remove ties
-    train_dl, val_dl, test_dl = data_utils.get_split_dataloaders(BATCH_SIZE, df)
 
     best_loss = float('inf')
 
     for epoch in range(EPOCHS):
-        val_loss = train_utils.fit_epoch(nnet, optimizer, scheduler, policy_criterion, value_criterion, POLICY_WEIGHT, VALUE_WEIGHT, train_dl, val_dl, epoch=epoch)
+        val_loss = train_utils.fit_epoch(nnet, optimizer, scheduler, policy_criterion, value_criterion, POLICY_WEIGHT, VALUE_WEIGHT, train_dl, val_dl, writer, epoch=epoch)
         if val_loss < best_loss:
             best_loss = val_loss
             print('Saving model!')
             torch.save(nnet.state_dict(), constants.MODEL_PATH)
-        scheduler.step()
+        # scheduler.step()
 
     nnet.eval()
     p_correct, values, value_losses, value_exp, total, value_loss_total, policy_loss_total = 0, [], [], [], 0, 0.0, 0.0
@@ -205,7 +200,6 @@ if __name__ == '__main__':
         lr=0, momentum=0.9, weight_decay=1e-4
     )
     best_loss = float('inf')
-    scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[1, 2, 3, 4], gamma=0.1)
     df = data_utils.get_dataframe()
     df = df.loc[df.value != 0] # remove ties
     train_dl, val_dl, test_dl = data_utils.get_dataloaders(BATCH_SIZE, df)
@@ -216,7 +210,7 @@ if __name__ == '__main__':
             best_loss = val_loss
             print('Saving model!')
             torch.save(nnet.state_dict(), constants.MODEL_PATH)
-        scheduler.step()
+        # scheduler.step()
 
 
     # nnet.eval()

@@ -1,4 +1,7 @@
+from . import neural_utils
 import time
+from datetime import datetime
+import math
 import numpy as np
 
 from collections import Counter
@@ -9,33 +12,132 @@ import torch
 import torch.nn as nn
 device = torch.device("cuda:0")
 
+
 UPDATE_FREQ = 1024
 NL_UPDATE_FREQ = UPDATE_FREQ*128
 
-N_BUCKETS = 3
-bucket = lambda v: int((v+1)/2*(1-1e-6)*N_BUCKETS)
+
+class StdMeanTracker():
+    def __init__(self):
+        self.N = 0
+        self.std = 0
+        self.mean = 0
+
+    def add(self, batch_out):
+        bN = batch_out.view(-1).size(0)
+        mean = batch_out.mean().item()
+        std = batch_out.std().item()
+
+        self.std = math.sqrt(
+            (self.std**2*(self.N-1) + std**2*(bN-1)) / (self.N + bN - 1))
+        self.mean = (self.mean*self.N + mean*bN) / (self.N + bN)
+        self.N = self.N + bN
+
 
 WIN = torch.FloatTensor([0, 0, 1]).to(device)
 TIE = torch.FloatTensor([0, 1, 0]).to(device)
 LOSS = torch.FloatTensor([1, 0, 0]).to(device)
+
+
 def value2categorical(value):
     value = value.view(-1)
     valueCategorical = torch.zeros((value.size(0), 3)).to(device)
-    valueCategorical[value ==  1] = WIN
-    valueCategorical[value ==  0] = TIE
+    valueCategorical[value == 1] = WIN
+    valueCategorical[value == 0] = TIE
     valueCategorical[value == -1] = LOSS
     return valueCategorical
 
+
+class WriteHelper():
+    def __init__(self, writer):
+        self.writer = writer
+        self.value_histogram_idx = 0
+        self.value_out_history = []
+        self.white_mask_history = []
+        self.graph_added = False
+
+    def write_to_tensorboard(self, tag, batch_idx, batch_size, n_batches, nnet, state, value, policy, value_out, policy_out, value_loss, policy_loss, total_loss, optimizer=None):
+        if not self.graph_added:
+            self.writer.add_graph(nnet, state)
+        white_mask = neural_utils.get_where_state_white_mask(state)
+        black_mask = ~white_mask
+        v_non_zero = (value != 0)
+        num_v_non_zero = v_non_zero.sum().item()
+        # Create a PR curve by setting P(win) = (1 + value)/2 and P(loss) = (1 - value)/2
+        value_labels = torch.zeros(num_v_non_zero, 2)
+        value_labels[:, 0] = (1 - value[v_non_zero])/2
+        value_labels[:, 1] = (1 + value[v_non_zero])/2
+        value_predictions = torch.zeros(num_v_non_zero, 2)
+        value_predictions[:, 0] = (1 - value_out[v_non_zero])/2
+        value_predictions[:, 1] = (1 + value_out[v_non_zero])/2
+        self.writer.add_pr_curve(
+            f'{tag}/ValuePR/', value_labels, value_predictions, batch_idx)
+        self.writer.add_pr_curve(
+            f'{tag}/PolicyPR/', policy, policy_out, batch_idx)
+
+        p_correct = policy.flatten(1).argmax(1) == policy_out.flatten(1).argmax(1)
+        v_correct = ((value == -1) & (value_out < 0)) | ((value == 1) & (value_out > 0))
+        p_loss = policy_loss.item()
+        v_loss = value_loss.item()
+        total_loss = total_loss.item()
+        lrs = [group['lr']
+               for group in optimizer.param_groups] if optimizer else []
+        self.writer.add_scalars(f'{tag}/ValueAccuracy/', {
+            'value': v_correct.sum().item()/v_non_zero.sum().item(),
+            'valueWhite': (v_correct & white_mask).sum().item()/(v_non_zero & white_mask).sum().item(),
+            'valueBlack': (v_correct & black_mask).sum().item()/(v_non_zero & black_mask).sum().item(),
+        }, batch_idx)
+        self.writer.add_scalars(f'{tag}/PolicyAccuracy/', {
+            'policy': p_correct.sum().item()/policy.size(0),
+            'policyWhite': (p_correct & white_mask).sum().item()/white_mask.sum().item(),
+            'policyBlack': (p_correct & black_mask).sum().item()/black_mask.sum().item(),
+        }, batch_idx)
+        self.writer.add_scalars(f'{tag}/Loss/', {
+            'policy': p_loss,
+            'value': v_loss,
+            'total': total_loss,
+        }, batch_idx)
+        self.writer.add_scalars(f'{tag}/LossValue/', {
+            'value': v_loss,
+        }, batch_idx)
+        if lrs:
+            self.writer.add_scalars(f'{tag}/LRs/', {
+                **{f'{i}': lr for i, lr in enumerate(lrs)},
+            }, batch_idx)
+
+        # histogram for every ~100k samples
+        self.value_out_history.append(value_out.cpu())
+        self.white_mask_history.append(white_mask)
+        next_batch_value_histogram_idx = (batch_idx+1)*batch_size//(1024*128)
+        if self.value_histogram_idx != next_batch_value_histogram_idx:
+            histogram = torch.stack(self.value_out_history).flatten()
+            historical_white_mask = torch.stack(
+                self.white_mask_history).flatten()
+            self.writer.add_histogram(
+                'value_output', histogram, self.value_histogram_idx)
+            self.writer.add_histogram(
+                'value_output_when_white', histogram[historical_white_mask], self.value_histogram_idx)
+            self.writer.add_histogram(
+                'value_output_when_black', histogram[~historical_white_mask], self.value_histogram_idx)
+            self.value_histogram_idx = next_batch_value_histogram_idx
+            self.value_out_history = []
+            self.white_mask_history = []
+
+
 def fit_epoch(nnet, optimizer, scheduler, policy_criterion, value_criterion,
-              POLICY_WEIGHT, VALUE_WEIGHT, train_dl, val_dl, skip_validation=False, epoch=0):
-    running_policy_loss, running_value_loss, p_correct, p_total, v_correct, v_total, t0 = 0., 0., 0, 0, 0, 0, time.time()
-    v_counter, v_exp = Counter(), Counter()
+              POLICY_WEIGHT, VALUE_WEIGHT, train_dl, val_dl, writer, skip_validation=False, epoch=0):
+    batch_size = train_dl.batch_size
+    t0 = datetime.now()
     nnet.train()
+    write_helper = WriteHelper(writer)
+    # Scale losses for metrics so they are the same regardless of reduction
+    vs = (lambda loss: loss/batch_size) if value_criterion.reduction == 'sum' else (lambda loss: loss)
+    ps = (lambda loss: loss/batch_size) if policy_criterion.reduction == 'sum' else (lambda loss: loss)
     for i, batch in enumerate(train_dl):
         # Transfer to GPU
         state, policy, value = batch['state'].to(device), batch['policy'].to(device), \
             batch['value'].to(device)
-        value = value2categorical(value)
+        # value = value2categorical(value)
 
         # zero the parameter gradients
         optimizer.zero_grad()
@@ -44,50 +146,23 @@ def fit_epoch(nnet, optimizer, scheduler, policy_criterion, value_criterion,
         policy_out, value_out = nnet(state)
         policy_loss = policy_criterion(policy_out, policy) * POLICY_WEIGHT
         # value_loss  = (value_criterion(value_out * 25, value * 25) / 25).sum() * VALUE_WEIGHT
-        value_loss  = value_criterion(value_out, value) * VALUE_WEIGHT
+        value_loss = value_criterion(value_out, value) * VALUE_WEIGHT
         total_loss = policy_loss + value_loss
         total_loss.backward()
         optimizer.step()
 
-        # print statistics
-        running_policy_loss += policy_loss.item()
-        running_value_loss  += value_loss.item()
-        p_correct += sum(policy.flatten(1).argmax(1) == policy_out.flatten(1).argmax(1)).item()
-        p_total += policy.size(0)
-        # v_correct += (((value < 0) & (value_out < 0)) | ((value > 0) & (value_out > 0))).sum().item()
-        # v_total += value.size(0)
-        # v_counter.update([bucket(v.item()) for v in value_out])
-        # v_exp.update([bucket(v.item()) for v in value])
-        v_correct += sum(value.argmax(1) == value_out.argmax(1)).item()
-        v_total += value.size(0)
-        v_counter.update([v.item() for v in value_out.argmax(1)])
-        v_exp.update([v.item() for v in value.argmax(1)])
-        nl = ((i*train_dl.batch_size) % NL_UPDATE_FREQ == 0 or i == len(train_dl)) and i != 0
-        if (i*train_dl.batch_size) % UPDATE_FREQ == 0:    # print every UPDATE_FREQ mini-batches
-            # vcs = [f'{v_counter[b]/v_total:.3f}' for b in range(N_BUCKETS)]
-            # vexps = [f'{v_exp[b]/v_total:.3f}' for b in range(N_BUCKETS)]
-            vcs = [f'{v_counter[b]/v_total:.3f}' for b in range(3)]
-            vexps = [f'{v_exp[b]/v_total:.3f}' for b in range(3)]
-            print('[%d,%7d,%7.2f%%] (%6.2fs) acc[p: %.2f%% v: %.2f%%] loss[p: %.3e v: %.3e total: %.3e] lrs: %s   vout_dist %s vexp_dist %s' %
-                  (epoch + 1, i, 100.*i/len(train_dl), time.time() - t0, p_correct*100./p_total, v_correct/v_total*100, 
-                   running_policy_loss / p_total, running_value_loss / v_total,
-                   (running_policy_loss + running_value_loss) / p_total, scheduler.get_lr(), ' '.join(vcs), 
-                   ' '.join(vexps)),
-                  end='\r\n' if nl else '\r')
-
-        if nl:
-            running_policy_loss, running_value_loss, p_correct, p_total, v_correct, v_total, t0 = 0., 0., 0, 0, 0, 0, time.time()
-            v_counter, v_exp = Counter(), Counter()
-
-        # scheduler.step()
+        write_helper.write_to_tensorboard(f'train_{epoch+1}', i, train_dl.batch_size, len(
+            train_dl), nnet, state, value, policy, value_out, policy_out, vs(value_loss), ps(policy_loss), (ps(policy_loss) + vs(value_loss))/2, optimizer)
+        print(f"Train Epoch {epoch+1}: {100.*i/len(train_dl):.2f}% {str(datetime.now() - t0).split('.')[0]}",
+              end='\r\n' if i+1 == len(train_dl) else '\r')
 
     if skip_validation:
         return None
 
     # Validation
     nnet.eval()
-    correct, val_correct, total, value_loss_total, policy_loss_total = 0, 0, 0, 0.0, 0.0
-    # values, value_exp = [], []
+    acc_total_loss = 0
+    write_helper = WriteHelper(writer)
     with torch.set_grad_enabled(False):
         for i, batch in enumerate(val_dl):
             # Transfer to GPU
@@ -96,37 +171,13 @@ def fit_epoch(nnet, optimizer, scheduler, policy_criterion, value_criterion,
             value = value2categorical(value)
             policy_out, value_out = nnet(state)
             policy_loss = policy_criterion(policy_out, policy) * POLICY_WEIGHT
-            value_loss  = value_criterion(value_out, value).mean() * VALUE_WEIGHT
+            value_loss = value_criterion(value_out, value) * VALUE_WEIGHT
+            total_loss = policy_loss + value_loss
+            acc_total_loss += total_loss.item()
 
-            correct += sum(policy.flatten(1).argmax(1) == policy_out.flatten(1).argmax(1)).item()
-            val_correct += sum(value.argmax(1) == value_out.argmax(1)).item()
-            # val_correct += (((value < 0) & (value_out < 0)) | ((value > 0) & (value_out > 0))).sum().item()
-            total += policy.size()[0]
-            value_loss_total += value_loss.item()
-            policy_loss_total += policy_loss.item()
+            write_helper.write_to_tensorboard(f'test_{epoch+1}', i, val_dl.batch_size, len(
+                val_dl), nnet, state, value, policy, value_out, policy_out, vs(value_loss), ps(policy_loss), (ps(policy_loss) + vs(value_loss))/2, optimizer=None)
+            print(f"Test Epoch {epoch+1}: {100.*i/len(val_dl):.2f}% {str(datetime.now() - t0).split('.')[0]}",
+                  end='\r\n' if i+1 == len(val_dl) else '\r')
 
-            # values.extend([v.argmax().item()-1 for v in value_out])
-            # value_exp.extend([v.argmax().item()-1 for v in value])
-
-    acc = 100.*correct/total
-    val_acc = 100.*val_correct/total
-    avg_value_loss = value_loss_total/len(val_dl)
-    avg_policy_loss = policy_loss_total/len(val_dl)
-    avg_loss = avg_value_loss + avg_policy_loss
-
-    # matplotlib.rcParams['figure.figsize'] = [15, 10]
-
-    # for i in range(4):
-    #     filt = [-1, 0, 1] if i == 0 else [[0], [-1], [1]][i-1]
-    #     ax = plt.subplot(2, 2, i+1)
-    #     ax.hist([v for v, exp in zip(values, value_exp) if exp in filt], bins=200, color='blue', edgecolor='black')
-    #     ax.set_title(f'Histogram of predicted values in {filt}', size=20)
-    #     ax.set_xlabel('Predicted value (win=1, loss=-1, tie=0)', size=17)
-    #     ax.set_ylabel('Frequency', size=17)
-
-    # plt.tight_layout()
-    # plt.show()
-    print(f'VALIDATION RESULTS: p_acc: {acc:.2f}%, v_acc: {val_acc:2f}%, total loss: {avg_loss:.3e}, policy loss: {avg_policy_loss:.3e}, value_loss: {avg_value_loss:.3e}' + (' '*300))
-    print()
-
-    return avg_loss
+    return acc_total_loss/len(val_dl)  # avg validation loss

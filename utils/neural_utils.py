@@ -7,12 +7,13 @@ import torch
 import torch.nn as nn
 device = torch.device("cuda:0")
 
+N_POINTS = 1*8 + 3*2 + 3*2 + 5*2 + 9
 piece2point = {
-    PAWN: 1/9,
-    BISHOP: 3/9,
-    KNIGHT: 3/9,
-    ROOK: 5/9,
-    QUEEN: 1,
+    PAWN: 1/N_POINTS,
+    BISHOP: 3/N_POINTS,
+    KNIGHT: 3/N_POINTS,
+    ROOK: 5/N_POINTS,
+    QUEEN: 9/N_POINTS,
     KING: 0,
 }
 
@@ -126,13 +127,18 @@ piece2plane = {val: idx for idx, val in enumerate([
     *[('attack_graph', i) for i in range(64)],
     *[('reverse_attack_graph', i) for i in range(64)],
     'is_check',
-    'turn',
+    (WHITE, 'turn'),
+    (BLACK, 'turn'),
 ])}
 
 turn2sign = {
     BLACK: 1,
     WHITE: -1,
 }
+
+def get_where_state_white_mask(batch):
+    plane = piece2plane[(WHITE, 'turn')]
+    return batch[:,plane,0,0] == 1
 
 def board2tensor(board):
     tensor = torch.zeros([len(piece2plane), 8, 8], dtype=torch.float32)
@@ -181,9 +187,8 @@ def board2tensor(board):
     p1, p2 = piece2plane['is_capture_0'], piece2plane['is_capture_72']
     tensor[p1:p2+1,:,:] = capture
 
-    # 1 plane is 1 if it is BLACK's turn to move, else 0 if WHITE's turn
-    plane = piece2plane['turn']
-    tensor[plane,:,:] = turn2sign[board.turn]
+    plane = piece2plane[(board.turn, 'turn')]
+    tensor[plane,:,:] = 1
 
     tensor[piece2plane['is_check'],:,:] = 1 if board.is_check() else 0
 

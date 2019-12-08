@@ -5,6 +5,7 @@ import re
 import os
 import sys
 import math
+import json
 import collections
 from chess import Board, Move, ROOK, BISHOP, KNIGHT, QUEEN, PAWN, KING, WHITE, BLACK
 from multiprocessing.pool import Pool
@@ -320,27 +321,31 @@ N_VALID = 50
 N_TEST = 50
 
 
-def get_split_dataloaders(batch_size, df):
-    n_rows = df.shape[0]
-    rows_per_file = math.ceil(n_rows/N_SPLIT)
-    files = [os.path.join(LICHESS_BROKEN_DF_FOLDER,
-                          f'{i}.csv') for i in range(N_SPLIT)]
-    fname2len = {}
-    for i, path in enumerate(files):
-        s, e = rows_per_file*i, min(rows_per_file*(i+1), n_rows)
-        fname2len[path] = e - s
+def get_split_dataloaders(batch_size, get_df):
+    fname2len_path = os.path.join(LICHESS_BROKEN_DF_FOLDER, 'fname2len.json')
+    files = [os.path.join(LICHESS_BROKEN_DF_FOLDER, f'{i}.csv') for i in range(N_SPLIT)]
 
     if not os.path.exists(LICHESS_BROKEN_DF_FOLDER):
         os.mkdir(LICHESS_BROKEN_DF_FOLDER)
 
+        df = get_df()
+        n_rows = df.shape[0]
+        rows_per_file = math.ceil(n_rows/N_SPLIT)
+        fname2len = {}
         # shuffle dataframe in place
         df = df.sample(frac=1).reset_index(drop=True)
         print('writing dataframe to:', LICHESS_BROKEN_DF_FOLDER, 'this will take about 1 minute/GB')
-    
+
         for i, path in enumerate(files):
             s, e = rows_per_file*i, min(rows_per_file*(i+1), n_rows)
             sub_df = df.iloc[s:e]
             sub_df.to_csv(path)
+            fname2len[path] = e - s
+        with open(fname2len_path, 'w') as f:
+            json.dump(fname2len, f)
+    else:
+        with open(fname2len_path) as f:
+            fname2len = json.load(f)
     
     print('dataframe on disk, delegating worker processes')
     train_ds, val_ds, test_ds = [
