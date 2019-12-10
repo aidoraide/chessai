@@ -99,7 +99,7 @@ if __name__ == '__main__':
     train_dl, val_dl, test_dl = data_utils.get_split_dataloaders(
         BATCH_SIZE, data_utils.get_lichess_dataframe)
     scheduler = optim.lr_scheduler.MultiStepLR(
-        optimizer, milestones=[int(i*len(train_dl)/3) for i in range(1, 4)])
+        optimizer, milestones=[int(i*len(train_dl)/2) for i in range(1, 4)])
 
     h_params = {
         'batch_size': BATCH_SIZE,

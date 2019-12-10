@@ -1,5 +1,6 @@
-from . import neural_utils
+from . import neural_utils, constants
 import time
+import os
 from datetime import datetime
 import math
 import numpy as np
@@ -49,13 +50,23 @@ def value2categorical(value):
 
 
 class WriteHelper():
+    N_TOP_PREDICTIONS = 5
+
     def __init__(self, writer):
         self.writer = writer
-        self.value_histogram_idx = 0
+        self.chunk_idx = 0
         self.value_out_history = []
         self.white_mask_history = []
         self.n_greater_history = []
+        self.value_pr_label_history = []
+        self.value_pr_value_history = []
         self.graph_added = False
+
+        # Make sure tensor flow is setting up the bounds correctly for the histogram
+        self.writer.add_histogram(
+            'n_greater_policy_predictions_than_true_label',
+            np.arange(WriteHelper.N_TOP_PREDICTIONS+1),
+            self.chunk_idx)
 
     def write_to_tensorboard(self, tag, batch_idx, batch_size, n_batches, nnet, state, value, policy, value_out, policy_out, value_loss, policy_loss, total_loss, optimizer=None):
         if not self.graph_added:
@@ -64,24 +75,41 @@ class WriteHelper():
         white_mask = neural_utils.get_where_state_white_mask(state)
         # black_mask = ~white_mask
         v_non_zero = (value != 0)
-
-        self.writer.add_pr_curve(
-            f'{tag}/ValuePR/', (value[v_non_zero]+1)/2, (value_out[v_non_zero]+1)/2, batch_idx)
         pol_argmax = policy.flatten(1).argmax(1)
-        policy_labels = torch.ones(batch_size).to(device) # They're all ones but this lets us see accuracy by threshold
-        policy_preds = torch.zeros(batch_size).to(device)
-        policy_preds[:] = policy_out.flatten(1)[np.arange(batch_size),pol_argmax]
-        self.writer.add_pr_curve(
-            f'{tag}/PolicyPR/', policy_labels, policy_preds, batch_idx)
-        n_greater = (policy_out.flatten(1) > policy_preds.view(-1, 1)).sum(1)
+        policy_preds = torch.zeros(policy.size(0)).to(device)
+        policy_preds[:] = policy_out.flatten(
+            1)[np.arange(policy.size(0)), pol_argmax]
+        n_greater = (policy_out.flatten(1) > policy_preds.view(-1, 1)).sum(1).clamp_max(WriteHelper.N_TOP_PREDICTIONS)
 
-        p_correct = policy.flatten(1).argmax(1) == policy_out.flatten(1).argmax(1)
-        v_correct = ((value == -1) & (value_out < 0)) | ((value == 1) & (value_out > 0))
+        p_correct = policy.flatten(1).argmax(
+            1) == policy_out.flatten(1).argmax(1)
+        v_correct = ((value == -1) & (value_out < 0)
+                     ) | ((value == 1) & (value_out > 0))
         p_loss = policy_loss.item()
         v_loss = value_loss.item()
         total_loss = total_loss.item()
-        self.writer.add_scalar(f'{tag}/Accuracy/Value', v_correct.sum().item()/v_non_zero.sum().item(), batch_idx)
-        self.writer.add_scalar(f'{tag}/Accuracy/Policy', p_correct.sum().item()/policy.size(0), batch_idx)
+        self.writer.add_scalar(
+            f'{tag}/Accuracy/Value', v_correct.sum().item()/v_non_zero.sum().item(), batch_idx)
+        self.writer.add_scalar(
+            f'{tag}/Accuracy/Policy', p_correct.sum().item()/policy.size(0), batch_idx)
+        self.writer.add_scalars(
+            f'{tag}/Accuracy/PolicyTopN',
+            {f'{n+1}': (n_greater <= n).sum().item()/policy.size(0)
+             for n in range(WriteHelper.N_TOP_PREDICTIONS)},
+            batch_idx
+        )
+        accuracyByThreshold = {}
+        for threshold in np.linspace(.2, .8, 4):
+            mask = value_out.abs() > threshold
+            n_correct = (v_correct & mask).sum().item()
+            n = (mask & (value != 0)).sum().item()
+            if n != 0:
+                accuracyByThreshold[f'{threshold}'] = n_correct/n
+        self.writer.add_scalars(
+            f'{tag}/Accuracy/ValueByThreshold',
+            accuracyByThreshold,
+            batch_idx
+        )
         self.writer.add_scalar(f'{tag}/Loss/Value', v_loss, batch_idx)
         self.writer.add_scalar(f'{tag}/Loss/Policy', p_loss, batch_idx)
         self.writer.add_scalar(f'{tag}/Loss/Total', total_loss, batch_idx)
@@ -95,26 +123,40 @@ class WriteHelper():
         self.value_out_history.append(value_out.cpu())
         self.white_mask_history.append(white_mask.cpu())
         self.n_greater_history.append(n_greater.cpu())
-        next_batch_value_histogram_idx = (batch_idx+1)*batch_size//(1024*128)
-        if self.value_histogram_idx != next_batch_value_histogram_idx:
-            if self.value_histogram_idx > 1:
-                # Add the histograms only after the models random initialization to get the right scale in TensorBoard
-                histogram = torch.stack(self.value_out_history).flatten()
-                historical_white_mask = torch.stack(
-                    self.white_mask_history).flatten()
-                self.writer.add_histogram(
-                    'value_output', histogram, self.value_histogram_idx)
-                self.writer.add_histogram(
-                    'value_output_when_white', histogram[historical_white_mask], self.value_histogram_idx)
-                self.writer.add_histogram(
-                    'value_output_when_black', histogram[~historical_white_mask], self.value_histogram_idx)
-                n_greater_histogram = torch.stack(self.n_greater_history).flatten()
-                self.writer.add_histogram(
-                    'n_greater_policy_predictions_than_true_label', n_greater_histogram, self.value_histogram_idx)
-            self.value_histogram_idx = next_batch_value_histogram_idx
+        self.value_pr_label_history.append(((value[v_non_zero]+1)/2).cpu())
+        self.value_pr_value_history.append(((value_out[v_non_zero]+1)/2).cpu())
+        next_batch_chunk_idx = (batch_idx+1)*batch_size//(1024*128)
+        if self.chunk_idx != next_batch_chunk_idx:
+            value_pr_label = torch.cat(self.value_pr_label_history)
+            value_pr_value = torch.cat(self.value_pr_value_history)
+            self.writer.add_pr_curve(
+                f'{tag}/ValuePR/', value_pr_label, value_pr_value, self.chunk_idx)
+            # Add the histograms only after the models random initialization to get the right scale in TensorBoard
+            histogram = torch.stack(self.value_out_history).flatten()
+            historical_white_mask = torch.stack(
+                self.white_mask_history).flatten()
+            self.writer.add_histogram(
+                'value_output',
+                histogram,
+                self.chunk_idx)
+            self.writer.add_histogram(
+                'value_output_when_white',
+                histogram[historical_white_mask],
+                self.chunk_idx)
+            self.writer.add_histogram(
+                'value_output_when_black',
+                histogram[~historical_white_mask],
+                self.chunk_idx)
+            self.writer.add_histogram(
+                'n_greater_policy_predictions_than_true_label',
+                torch.stack(self.n_greater_history).flatten(),
+                self.chunk_idx)
+            self.chunk_idx = next_batch_chunk_idx
             self.value_out_history = []
             self.white_mask_history = []
             self.n_greater_history = []
+            self.value_pr_label_history = []
+            self.value_pr_value_history = []
 
 
 def fit_epoch(nnet, optimizer, scheduler, policy_criterion, value_criterion,
@@ -124,8 +166,10 @@ def fit_epoch(nnet, optimizer, scheduler, policy_criterion, value_criterion,
     nnet.train()
     write_helper = WriteHelper(writer)
     # Scale losses for metrics so they are the same regardless of reduction
-    vs = (lambda loss: loss/batch_size/VALUE_WEIGHT) if value_criterion.reduction == 'sum' else (lambda loss: loss/VALUE_WEIGHT)
-    ps = (lambda loss: loss/batch_size/POLICY_WEIGHT) if policy_criterion.reduction == 'sum' else (lambda loss: loss/POLICY_WEIGHT)
+    vs = (lambda loss: loss/batch_size /
+          VALUE_WEIGHT) if value_criterion.reduction == 'sum' else (lambda loss: loss/VALUE_WEIGHT)
+    ps = (lambda loss: loss/batch_size /
+          POLICY_WEIGHT) if policy_criterion.reduction == 'sum' else (lambda loss: loss/POLICY_WEIGHT)
     for i, batch in enumerate(train_dl):
         # Transfer to GPU
         state, policy, value = batch['state'].to(device), batch['policy'].to(device), \
@@ -143,11 +187,11 @@ def fit_epoch(nnet, optimizer, scheduler, policy_criterion, value_criterion,
         total_loss = policy_loss + value_loss
         total_loss.backward()
         optimizer.step()
-        scheduler.step(total_loss)
+        scheduler.step()
 
         write_helper.write_to_tensorboard(f'train_{epoch+1}', i, train_dl.batch_size, len(
             train_dl), nnet, state, value, policy, value_out, policy_out, vs(value_loss), ps(policy_loss), ps(policy_loss) + vs(value_loss), optimizer)
-        print(f"Train Epoch {epoch+1}: {100.*i/len(train_dl):.2f}% {str(datetime.now() - t0).split('.')[0]}",
+        print(f"Train Epoch {epoch+1}: {100.*(i+1)/len(train_dl):.2f}% {str(datetime.now() - t0).split('.')[0]}",
               end='\r\n' if i+1 == len(train_dl) else '\r')
 
     if skip_validation:
@@ -162,7 +206,7 @@ def fit_epoch(nnet, optimizer, scheduler, policy_criterion, value_criterion,
             # Transfer to GPU
             state, policy, value = batch['state'].to(device), batch['policy'].to(device), \
                 batch['value'].to(device)
-            value = value2categorical(value)
+            # value = value2categorical(value)
             policy_out, value_out = nnet(state)
             policy_loss = policy_criterion(policy_out, policy) * POLICY_WEIGHT
             value_loss = value_criterion(value_out, value) * VALUE_WEIGHT
@@ -171,7 +215,7 @@ def fit_epoch(nnet, optimizer, scheduler, policy_criterion, value_criterion,
 
             write_helper.write_to_tensorboard(f'test_{epoch+1}', i, val_dl.batch_size, len(
                 val_dl), nnet, state, value, policy, value_out, policy_out, vs(value_loss), ps(policy_loss), (ps(policy_loss) + vs(value_loss))/2, optimizer=None)
-            print(f"Test Epoch {epoch+1}: {100.*i/len(val_dl):.2f}% {str(datetime.now() - t0).split('.')[0]}",
+            print(f"Val  Epoch {epoch+1}: {100.*(i+1)/len(val_dl):.2f}% {str(datetime.now() - t0).split('.')[0]}",
                   end='\r\n' if i+1 == len(val_dl) else '\r')
 
     return acc_total_loss/len(val_dl)  # avg validation loss
