@@ -214,7 +214,7 @@ def fit_epoch(nnet, optimizer, scheduler, policy_criterion, value_criterion,
             acc_total_loss += total_loss.item()
 
             write_helper.write_to_tensorboard(f'test_{epoch+1}', i, val_dl.batch_size, len(
-                val_dl), nnet, state, value, policy, value_out, policy_out, vs(value_loss), ps(policy_loss), (ps(policy_loss) + vs(value_loss))/2, optimizer=None)
+                val_dl), nnet, state, value, policy, value_out, policy_out, vs(value_loss), ps(policy_loss), ps(policy_loss) + vs(value_loss), optimizer=None)
             print(f"Val  Epoch {epoch+1}: {100.*(i+1)/len(val_dl):.2f}% {str(datetime.now() - t0).split('.')[0]}",
                   end='\r\n' if i+1 == len(val_dl) else '\r')
 
