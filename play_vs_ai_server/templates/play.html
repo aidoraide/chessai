@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Play VS AI</title>
+    <script
+      src="https://code.jquery.com/jquery-3.4.1.js"
+      integrity="sha256-WpOohJOqMqqyKL9FccASB9O0KwACQJpFTUBLTYOVvVU="
+      crossorigin="anonymous"
+    ></script>
+    <style>
+      body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .chess-container {
+        width: 800px;
+        height: 800px;
+        /* display: flex; */
+        align-items: center;
+        cursor: pointer;
+        display: inline-block;
+      }
+
+      .chess-container .square {
+        /* cursor: pointer; */
+      }
+
+      .chess-container .square:hover {
+        opacity: 0.5;
+      }
+
+      .chess-container .loading {
+        position: absolute;
+        width: 100%;
+        height: 100%;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        right: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .chess-container .loading img {
+        width: 100px;
+        height: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>{{ game_over_message }}</h1>
+    <div class="chess-container">
+      {{ board_svg | safe }} {% if turn != player_colour %}
+      <div class="loading">
+        <img
+          src="https://icon-library.net/images/loading-icon-transparent-background/loading-icon-transparent-background-3.jpg"
+        />
+      </div>
+      {% endif %}
+    </div>
+
+    <script>
+      var state = "{{ board_fen }}";
+      var target_squares = {{ target_squares | safe }};
+      var selected_square = "{{ selected_square }}";
+      var player_colour = "{{ player_colour }}";
+      var turn = "{{ turn }}";
+      var game_over_message = "{{ game_over_message }}";
+
+      console.log({
+        state: state,
+        target_squares: target_squares,
+        selected_square: selected_square,
+        player_colour: player_colour,
+        turn: turn,
+        game_over_message,
+      });
+
+      function getActionURI(from_square, to_square){
+        return '/play/action?board=' + encodeURIComponent(state)
+              + '&to_square=' + encodeURIComponent(to_square)
+              + '&from_square=' + encodeURIComponent(from_square)
+              + '&player_colour=' + player_colour;
+      }
+
+      function getSelectedURI(square){
+        return '/play?board=' + encodeURIComponent(state)
+              + '&selected_square=' + encodeURIComponent(square)
+              + '&player_colour=' + player_colour;
+      }
+
+      console.log(state);
+      console.log(target_squares);
+      $(document).ready(function(){
+        $('.chess-container .square').click(function(e){
+          var square = $(e.currentTarget);
+          var squareCoords = square.attr('class').split(' ')[2];
+          var targetURI;
+          if (target_squares.includes(squareCoords)) {
+            targetURI = getActionURI(selected_square, squareCoords);
+          } else {
+            targetURI = getSelectedURI(squareCoords);
+          }
+          window.location.href = targetURI;
+        });
+
+        if (turn !== player_colour && game_over_message === ""){
+          console.log('AIs turn, asking for it\'s prediction');
+            $.ajax(
+            '/get_ai_move?board=' + encodeURIComponent(state) + '&player_colour=' + player_colour,
+            {
+              method: 'GET',
+              success: function(res) {
+                console.log('success', res);
+                window.location.href = getActionURI(res.from_square, res.to_square);
+              }
+            }
+          );
+
+        }
+      });
+    </script>
+  </body>
+</html>

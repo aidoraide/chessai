@@ -5,7 +5,7 @@ import itertools
 
 import torch
 import torch.nn as nn
-device = torch.device("cuda:0")
+from utils.constants import device
 
 N_POINTS = 1*8 + 3*2 + 3*2 + 5*2 + 9
 piece2point = {
@@ -126,7 +126,7 @@ def get_where_state_white_mask(batch):
 
 def board2tensor(board):
     tensor = torch.zeros([len(piece2plane), 8, 8], dtype=torch.float32)
-    
+
     for x, y in itertools.product(range(8), range(8)):
         sqr = x + y*8
         piece = board.piece_at(sqr)
@@ -150,12 +150,10 @@ def board2tensor(board):
 
 def state2policy(board, best_move_idx):
     tensor = torch.zeros([73, 8, 8], dtype=torch.float32)
-#     for x, y, z in (move2idx(m) for m in board.legal_moves):
-#         tensor[z][x][y] = 1
-
     x, y, z = best_move_idx
-    tensor[z][x][y] = 1               # Make the best move worth more
-    return tensor / torch.sum(tensor) # Turn tensor into probabilities (sum(tensor) == 1)
+    tensor[z][x][y] = 1
+    return tensor
+
 
 def get_illegal_mask(board):
     tensor = torch.ones([73, 8, 8], dtype=torch.float32)
@@ -202,117 +200,3 @@ class ResBlock(nn.Module):
 class Flatten(nn.Module):
     def forward(self, x):
         return x.flatten(1)
-
-    
-class ChessNet(nn.Module):
-    # def __init__(self, n_res_blocks=19, learning_rate=0.01, bias=False, gpu_id=0):
-    #     super(ChessNet, self).__init__()
-    #     res_blocks = [(f'res_block{i+1}', ResBlock()) for i in range(n_res_blocks)]
-    #     self.res_tower = nn.Sequential(OrderedDict([
-    #         ('conv1', nn.Conv2d(len(piece2plane), 256, 3, padding=1)),
-    #         ('batchnorm1', nn.BatchNorm2d(256)),
-    #         ('relu1', nn.ReLU(inplace=True)),
-    #         *res_blocks
-    #     ]))
-    #     self.policy_head = nn.Sequential(OrderedDict([
-    #         ('conv1', nn.Conv2d(256, 2, 1)),
-    #         ('batchnorm1', nn.BatchNorm2d(2)),
-    #         ('relu1', nn.ReLU(inplace=True)),
-    #         ('flatten', Flatten()),
-    #         ('fc1', nn.Linear(8*8*2, 8*8*73)),
-    #         ('softmax', nn.Softmax(dim=1))
-    #     ]))
-    #     self.value_head = nn.Sequential(OrderedDict([
-    #         ('conv1', nn.Conv2d(256, 1, 1)),
-    #         ('batchnorm1', nn.BatchNorm2d(1)),
-    #         ('relu1', nn.ReLU(inplace=True)),
-    #         ('flatten', Flatten()), # Should we flatten here or after? Does it matter?
-    #         ('fc1', nn.Linear(64, 256)),
-    #         ('relu2', nn.ReLU(inplace=True)),
-    #         ('fc2', nn.Linear(256, 1)),
-    #         ('tanh', nn.Tanh())
-    #     ]))
-    def __init__(self, n_res_blocks=19, learning_rate=0.01, bias=False, gpu_id=0):
-        super(ChessNet, self).__init__()
-        res_blocks = [(f'res_block{i+1}', ResBlock()) for i in range(n_res_blocks)]
-        self.res_tower = nn.Sequential(OrderedDict([
-            ('conv1', nn.Conv2d(len(piece2plane), 256, 3, padding=1)),
-            ('batchnorm1', nn.BatchNorm2d(256)),
-            ('relu1', nn.ReLU(inplace=True)),
-            *res_blocks
-        ]))
-        self.policy_head = nn.Sequential(OrderedDict([
-            ('conv1', nn.Conv2d(256, 64, 1)), # Changed to output 64 filters instead of 2
-            ('batchnorm1', nn.BatchNorm2d(64)),
-            ('relu1', nn.ReLU(inplace=True)),
-            ('conv2', nn.Conv2d(64, 16, 1)), # Added this conv layer
-            ('batchnorm2', nn.BatchNorm2d(16)),
-            ('relu2', nn.ReLU(inplace=True)),
-            ('flatten', Flatten()),
-            ('fc1', nn.Linear(8*8*16, 8*8*73)),
-            ('softmax', nn.Softmax(dim=1))
-        ]))
-        self.value_head = nn.Sequential(OrderedDict([
-            ('conv1', nn.Conv2d(256, 32, 1)), # Changed to 32 out instead of 2
-            ('batchnorm1', nn.BatchNorm2d(32)),
-            ('relu1', nn.ReLU(inplace=True)),
-            ('conv2', nn.Conv2d(32, 4, 1)), # Changed to 32 out instead of 2
-            ('batchnorm2', nn.BatchNorm2d(4)),
-            ('relu2', nn.ReLU(inplace=True)),
-            ('flatten', Flatten()),
-            ('fc1', nn.Linear(64 * 4, 512)),
-            ('relu2', nn.ReLU(inplace=True)),
-            ('fc2', nn.Linear(512, 1)),
-            ('tanh', nn.Tanh())
-        ]))
-    # def __init__(self, n_res_blocks=19, learning_rate=0.01, bias=False, gpu_id=0):
-    #     super(ChessNet, self).__init__()
-    #     res_blocks = [(f'res_block{i+1}', ResBlock()) for i in range(n_res_blocks)]
-    #     self.res_tower = nn.Sequential(OrderedDict([
-    #         ('conv1', nn.Conv2d(len(piece2plane), 256, 3, padding=1)),
-    #         ('batchnorm1', nn.BatchNorm2d(256)),
-    #         ('relu1', nn.ReLU(inplace=True)),
-    #         *res_blocks
-    #     ]))
-    #     self.policy_head = nn.Sequential(OrderedDict([
-    #         ('conv1', nn.Conv2d(256, 64, 1)), # Changed to output 64 filters instead of 2
-    #         ('batchnorm1', nn.BatchNorm2d(64)),
-    #         ('relu1', nn.ReLU(inplace=True)),
-    #         ('conv2', nn.Conv2d(64, 16, 1)), # Added this conv layer
-    #         ('batchnorm2', nn.BatchNorm2d(16)),
-    #         ('relu2', nn.ReLU(inplace=True)),
-    #         ('flatten', Flatten()),
-    #         ('fc1', nn.Linear(8*8*16, 8*8*73)),
-    #         ('softmax', nn.Softmax(dim=1))
-    #     ]))
-    #     self.value_head = nn.Sequential(OrderedDict([
-    #         ('conv1', nn.Conv2d(256, 2, 1)), # Changed to 32 out instead of 2
-    #         ('batchnorm1', nn.BatchNorm2d(2)),
-    #         ('relu1', nn.ReLU(inplace=True)),
-    #         ('flatten', Flatten()),
-    #         ('fc1', nn.Linear(64 * 2, 512)),
-    #         ('relu2', nn.ReLU(inplace=True)),
-    #         ('fc2', nn.Linear(512, 1)),
-    #         ('tanh', nn.Tanh())
-    #     ]))
-
-
-    def forward(self, x):
-        tower_out = self.res_tower(x)
-        policy_out = self.policy_head(tower_out)
-        value_out = self.value_head(tower_out)
-        
-        return policy_out.view(-1, 73, 8, 8), value_out.view(-1, 1)
-
-
-def get_net(fname):
-    nnet = ChessNet(n_res_blocks=19)
-    nnet.eval()
-    nnet.to(device)
-    nnet.load_state_dict(torch.load(fname))
-    return nnet
-
-
-def predict(nnet, board):
-    state = board2tensor(board)
-    policy, value_out = nnet.forward(state)

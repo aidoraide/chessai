@@ -27,6 +27,17 @@ def get_num_workers_from_args():
     return int(sys.argv[1])
 
 
+def get_training_data(state, value, move):
+    board = Board(state)
+    move_idxs = move2idx(board.parse_san(move))
+    # attack_graph = get_attack_graph(board)
+    return {
+        # torch.cat((board2tensor(board), attack_graph), 0),
+        'state': board2tensor(board),
+        'value': torch.Tensor([value]),
+        'policy': state2policy(board, move_idxs),
+    }
+
 class SupervisedChessDataset(Dataset):
 
     def get_raw(self, idx):
@@ -51,15 +62,7 @@ class SupervisedChessDataset(Dataset):
     def __getitem__(self, idx):
         row = self.df.iloc[idx, :]
         state, value, move = row.state, row.value, row.move
-        board = Board(state)
-        move_idxs = move2idx(board.parse_san(move))
-        # attack_graph = get_attack_graph(board)
-        return {
-            # torch.cat((board2tensor(board), attack_graph), 0),
-            'state': board2tensor(board),
-            'value': torch.Tensor([value]),
-            'policy': state2policy(board, move_idxs),
-        }
+        return get_training_data(state, value, move)
 
 
 def game2permove(d):
@@ -313,8 +316,8 @@ N_TEST = 50
 
 
 def get_split_dataloaders(batch_size, get_df):
-    fname2len_path = os.path.join(LICHESS_BROKEN_DF_FOLDER, 'fname2len.json')
-    files = [os.path.join(LICHESS_BROKEN_DF_FOLDER, f'{i}.csv') for i in range(N_SPLIT)]
+    fname2len_path = LICHESS_BROKEN_DF_FOLDER + '/fname2len.json'
+    files = [f'{LICHESS_BROKEN_DF_FOLDER}/{i}.csv' for i in range(N_SPLIT)]
 
     if not os.path.exists(LICHESS_BROKEN_DF_FOLDER):
         os.mkdir(LICHESS_BROKEN_DF_FOLDER)
