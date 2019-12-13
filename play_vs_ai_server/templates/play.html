@@ -10,8 +10,12 @@
     <style>
       body {
         display: flex;
+        flex-direction: column;
         align-items: center;
         justify-content: center;
+        min-width: 100vw;
+        min-height: 100vh;
+        margin: 0px;
       }
 
       .chess-container {
@@ -21,13 +25,11 @@
         align-items: center;
         cursor: pointer;
         display: inline-block;
+        background-color: #763B00;
       }
 
-      .chess-container .square {
-        /* cursor: pointer; */
-      }
-
-      .chess-container .square:hover {
+      .chess-container .square:hover,
+      .chess-container .use:hover {
         opacity: 0.5;
       }
 
@@ -51,7 +53,9 @@
     </style>
   </head>
   <body>
+    {% if game_over_message %}
     <h1>{{ game_over_message }}</h1>
+    {% endif %}
     <div class="chess-container">
       {{ board_svg | safe }} {% if turn != player_colour %}
       <div class="loading">
@@ -69,6 +73,7 @@
       var player_colour = "{{ player_colour }}";
       var turn = "{{ turn }}";
       var game_over_message = "{{ game_over_message }}";
+      var last_move = "{{ last_move }}";
 
       console.log({
         state: state,
@@ -77,6 +82,7 @@
         player_colour: player_colour,
         turn: turn,
         game_over_message,
+        last_move: last_move,
       });
 
       function getActionURI(from_square, to_square){
@@ -89,16 +95,29 @@
       function getSelectedURI(square){
         return '/play?board=' + encodeURIComponent(state)
               + '&selected_square=' + encodeURIComponent(square)
+              + '&last_move=' + last_move
               + '&player_colour=' + player_colour;
       }
 
-      console.log(state);
-      console.log(target_squares);
       $(document).ready(function(){
         $('.chess-container .square').click(function(e){
           var square = $(e.currentTarget);
-          var squareCoords = square.attr('class').split(' ')[2];
+          var squareCoords = square.attr('class').split(' ');
+          squareCoords = squareCoords[squareCoords.length - 1];
           var targetURI;
+          if (target_squares.includes(squareCoords)) {
+            targetURI = getActionURI(selected_square, squareCoords);
+          } else {
+            targetURI = getSelectedURI(squareCoords);
+          }
+          window.location.href = targetURI;
+        });
+
+        $('.chess-container use').click(function(e){
+          var use = $(e.currentTarget);
+          var square = $(use[0].previousSibling);
+          var squareCoords = square.attr('class').split(' ');
+          squareCoords = squareCoords[squareCoords.length - 1];
           if (target_squares.includes(squareCoords)) {
             targetURI = getActionURI(selected_square, squareCoords);
           } else {
