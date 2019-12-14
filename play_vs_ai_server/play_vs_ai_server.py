@@ -1,5 +1,6 @@
 from flask import Flask, render_template, redirect, request, jsonify
 import urllib
+import json
 import chess
 import chess.svg
 import os,sys,inspect
@@ -45,6 +46,7 @@ def play():
     selected_square = request.args.get('selected_square')
     chess_square = chess.SQUARE_NAMES.index(selected_square) if selected_square else None
     target_squares = []
+    promo_targets = []
 
     if chess_square is not None and board.piece_at(chess_square) and board.piece_at(chess_square).color == get_chess_colour(player_colour):
         targets = []
@@ -52,13 +54,14 @@ def play():
             if m.from_square == chess_square:
                 targets.append(m.to_square)
                 target_squares.append(chess.SQUARE_NAMES[m.to_square])
+                if m.promotion:
+                    promo_targets.append(chess.SQUARE_NAMES[m.to_square])
         squares = chess.SquareSet(targets)
     else:
         squares = None
     
     board_svg = chess.svg.board(board, squares=squares, lastmove=last_move)
 
-    target_squares = [f'"{t}"' for t in target_squares]
     game_over_message = ''
     if board.is_game_over():
         if board.turn == get_chess_colour(player_colour):
@@ -69,7 +72,8 @@ def play():
         "play.html",
         board_svg=board_svg,
         board_fen=board.fen(),
-        target_squares=f"[{', '.join(target_squares)}]",
+        target_squares=json.dumps(target_squares),
+        promo_targets=json.dumps(promo_targets),
         selected_square=selected_square,
         player_colour=player_colour,
         turn=get_colour_str(board.turn),
@@ -83,14 +87,10 @@ def action():
     player_colour = request.args['player_colour']
     from_square = request.args['from_square']
     to_square = request.args['to_square']
-    move_str = from_square + to_square
+    promotion = request.args['promotion']
 
-    move = None
-    for m in board.legal_moves:
-        if str(m) == move_str:
-            board.push(m)
-            move = m
-            break
+    move = board.parse_uci(f'{from_square}{to_square}{promotion}')
+    board.push(move)
 
     urlParams = {'board': board.fen(), 'player_colour': player_colour, 'last_move': str(move)}
     return redirect('/play?' + urllib.parse.urlencode(urlParams))
@@ -101,10 +101,11 @@ def get_ai_move():
     player_colour = request.args['player_colour']
     print('Get AI move for board', board.fen())
     move = get_move_mcts(nnet, board, evaluation_mode=True)
-    from_square, to_square = chess.SQUARE_NAMES[move.from_square], chess.SQUARE_NAMES[move.to_square]
+    move_str = board.uci(move)
     return jsonify({
-        'from_square': from_square,
-        'to_square': to_square,
+        'from_square': move_str[:2],
+        'to_square': move_str[2:4],
+        'promotion': move_str[4:],
     })
 
 if __name__ == '__main__':

@@ -69,6 +69,7 @@
     <script>
       var state = "{{ board_fen }}";
       var target_squares = {{ target_squares | safe }};
+      var promo_targets = {{ promo_targets | safe }};
       var selected_square = "{{ selected_square }}";
       var player_colour = "{{ player_colour }}";
       var turn = "{{ turn }}";
@@ -78,6 +79,7 @@
       console.log({
         state: state,
         target_squares: target_squares,
+        promo_targets,
         selected_square: selected_square,
         player_colour: player_colour,
         turn: turn,
@@ -85,10 +87,11 @@
         last_move: last_move,
       });
 
-      function getActionURI(from_square, to_square){
+      function getActionURI(from_square, to_square, promotion){
         return '/play/action?board=' + encodeURIComponent(state)
               + '&to_square=' + encodeURIComponent(to_square)
               + '&from_square=' + encodeURIComponent(from_square)
+              + '&promotion=' + encodeURIComponent(promotion)
               + '&player_colour=' + player_colour;
       }
 
@@ -99,18 +102,22 @@
               + '&player_colour=' + player_colour;
       }
 
+      function onSquareClick(squareCoords) {
+        if (target_squares.includes(squareCoords)) {
+          var promo = promo_targets.includes(squareCoords) ? 'q' : '';
+          targetURI = getActionURI(selected_square, squareCoords, promo);
+        } else {
+          targetURI = getSelectedURI(squareCoords);
+        }
+        window.location.href = targetURI;
+      }
+
       $(document).ready(function(){
         $('.chess-container .square').click(function(e){
           var square = $(e.currentTarget);
           var squareCoords = square.attr('class').split(' ');
           squareCoords = squareCoords[squareCoords.length - 1];
-          var targetURI;
-          if (target_squares.includes(squareCoords)) {
-            targetURI = getActionURI(selected_square, squareCoords);
-          } else {
-            targetURI = getSelectedURI(squareCoords);
-          }
-          window.location.href = targetURI;
+          onSquareClick(squareCoords);
         });
 
         $('.chess-container use').click(function(e){
@@ -118,12 +125,7 @@
           var square = $(use[0].previousSibling);
           var squareCoords = square.attr('class').split(' ');
           squareCoords = squareCoords[squareCoords.length - 1];
-          if (target_squares.includes(squareCoords)) {
-            targetURI = getActionURI(selected_square, squareCoords);
-          } else {
-            targetURI = getSelectedURI(squareCoords);
-          }
-          window.location.href = targetURI;
+          onSquareClick(squareCoords);
         });
 
         if (turn !== player_colour && game_over_message === ""){
@@ -134,7 +136,7 @@
               method: 'GET',
               success: function(res) {
                 console.log('success', res);
-                window.location.href = getActionURI(res.from_square, res.to_square);
+                window.location.href = getActionURI(res.from_square, res.to_square, res.promotion);
               }
             }
           );
