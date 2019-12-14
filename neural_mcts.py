@@ -69,6 +69,10 @@ class MCTS:
 
     thinking_time = 0
 
+    pred_preprocessing_time = 0
+    pred_forward_time = 0
+    pred_postprocessing_time = 0
+
 
     def __init__(self, root):
         self.root = root
@@ -151,17 +155,26 @@ class MCTS:
 
 
 def predict(nnet, board):
+    t0 = time()
     state = board2tensor(board).to(device)
+    MCTS.pred_preprocessing_time += time() - t0
+
+    t0 = time()
     policy, value_out = nnet.forward(state.unsqueeze(0))
     # Remove batch size and return vector + scalar
     value = value_out[0].item()
     policy = policy[0].flatten().detach().cpu().numpy()
+    MCTS.pred_forward_time += time() - t0
+
+    t0 = time()
     noise = 0.3 # np.random.dirichlet([0.03], 1).flatten()
     n = 0.25
     # print('mean =', noise.mean(), 'std =', noise.std())
     # policy = (1-n)*policy + n*noise
     policy *= get_legal_mask(board).flatten().detach().numpy()
-    return policy/policy.sum(), value
+    policy = policy/policy.sum()
+    MCTS.pred_postprocessing_time += time() - t0
+    return policy, value
 
 
 def move2action(move):
@@ -182,7 +195,7 @@ def get_move_mcts(nnet, board, evaluation_mode=False):
     mcts = MCTS(board)
     mcts.root = board
     for i in range(NUM_MCTS+1):
-        if i % 10 == 0:
+        if i % 25 == 0:
             print(f'{i*100./NUM_MCTS:.1f}%  ({time() - t0:.2f}s)', end='\r')
         mcts.search(board, Chess, nnet)
     thinking_time = time() - t0
@@ -198,6 +211,9 @@ def get_move_mcts(nnet, board, evaluation_mode=False):
         # print(f'MCTS.thinking_time       = {MCTS.thinking_time:.4f}    ({MCTS.thinking_time/turn:.2f}s per turn avg)')
         print(f'MCTS.next_state_time     = {MCTS.next_state_time:.4f}   ({MCTS.next_state_time/MCTS.thinking_time*100:.2f}%)')
         print(f'MCTS.prediction_time     = {MCTS.prediction_time:.4f}   ({MCTS.prediction_time/MCTS.thinking_time*100:.2f}%)')
+        print(f'    MCTS.preprocessing_time      = {MCTS.pred_preprocessing_time:.4f}   ({MCTS.pred_preprocessing_time/MCTS.prediction_time*100:.2f}%)')
+        print(f'    MCTS.forward_time            = {MCTS.pred_forward_time:.4f}   ({MCTS.pred_forward_time/MCTS.prediction_time*100:.2f}%)')
+        print(f'    MCTS.postprocessing_time     = {MCTS.pred_postprocessing_time:.4f}   ({MCTS.pred_postprocessing_time/MCTS.prediction_time*100:.2f}%)')
         print(f'MCTS.increment_time      = {MCTS.increment_time:.4f}    ({MCTS.increment_time/MCTS.thinking_time*100:.2f}%)')
         print(f'MCTS.move_selection_time = {MCTS.move_selection_time:.4f}   ({MCTS.move_selection_time/MCTS.thinking_time*100:.2f}%)')
         print(f'MCTS.heapify_time        = {MCTS.heapify_time:.4f}   ({MCTS.heapify_time/MCTS.thinking_time*100:.2f}%)')
